@@ -1,4 +1,12 @@
-.venv/
+*
+!.gitignore
+!README.md
+!pyproject.toml
+!src/
+!src/**
+!tests/
+!tests/**
+
 __pycache__/
+*.py[cod]
 *.egg-info/
-build/

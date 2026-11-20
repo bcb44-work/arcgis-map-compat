@@ -171,7 +171,8 @@ class BrowserTests(unittest.TestCase):
 
     def serve_data(self, route):
         self.requests.append(route.request.url)
-        headers = {"Access-Control-Allow-Origin": "*",
+        headers = {"Access-Control-Allow-Origin": route.request.headers.get("origin", "*"),
+                   "Access-Control-Allow-Credentials": "true",
                    "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges",
                    "Access-Control-Allow-Headers": "*", "Accept-Ranges": "bytes"}
         if route.request.method == "OPTIONS":
@@ -186,6 +187,10 @@ class BrowserTests(unittest.TestCase):
             return route.fulfill(body=json.dumps({"error": {
                 "code": 499, "message": "Token Required", "details": [],
             }}), headers=headers, content_type="application/json")
+        if "signedurl=true" in route.request.url:
+            return route.fulfill(
+                body=json.dumps({"url": "https://data.test/points.parquet?signature=PORTAL_SIGNATURE"}),
+                headers=headers, content_type="application/json")
         path = urlsplit(route.request.url).path
         if path.endswith((".parquet", "/data")):
             body = Path(__file__).with_name("points.parquet").read_bytes()
@@ -201,7 +206,8 @@ class BrowserTests(unittest.TestCase):
         if "/items/" in route.request.url:
             return route.fulfill(
                 body=json.dumps({"id": "a" * 32, "type": "Apache Parquet", "title": "Points",
-                                 "owner": "test", "access": "public", "size": 1286}),
+                                 "owner": "test", "access": "private", "size": 1286,
+                                 "modified": 1700000000000}),
                 headers=headers, content_type="application/json")
         fields = [{"name": "OBJECTID", "type": "esriFieldTypeOID", "alias": "OBJECTID"}]
         extent = {"xmin": -118.1, "ymin": 34, "xmax": -118, "ymax": 34.1,
