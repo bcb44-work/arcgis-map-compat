@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from arcgis_map_compat import GIS, MapBuilder
+from geoanalytics_widget import GIS, MapBuilder
 
 try:
     from playwright.sync_api import sync_playwright

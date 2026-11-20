@@ -14,7 +14,7 @@ class BlockUnusedDependencies(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, BlockUnusedDependencies())
-from arcgis_map_compat import GIS, MapBuilder
+from geoanalytics_widget import GIS, MapBuilder
 from ipywidgets import Widget
 from ipywidgets.embed import embed_minimal_html
 

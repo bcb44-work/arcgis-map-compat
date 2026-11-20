@@ -3,7 +3,7 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arcgis-map-compat"
+name = "geoanalytics-widget"
 version = "0.3.0"
 description = "A minimal notebook map for feature services and Parquet."
 readme = "README.md"
@@ -17,4 +17,4 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-arcgis_map_compat = ["map.js", "py.typed"]
+geoanalytics_widget = ["map.js", "py.typed"]
