@@ -4,18 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arcgis-map-compat"
-version = "0.2.0"
-description = "A reduced notebook widget for visualizing Parquet URLs."
+version = "0.3.0"
+description = "A minimal notebook map for feature services and Parquet."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "anywidget>=0.11,<0.12",
+    "anywidget>=0.7.1,<1",
     "ipywidgets>=7.7.2,<9",
-    "traitlets>=5",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-arcgis_map_compat = ["static/*.js", "static/*.css", "frontend/**/*.ts", "frontend/**/*.tsx", "frontend/*.css", "frontend/*.js"]
+arcgis_map_compat = ["map.js"]

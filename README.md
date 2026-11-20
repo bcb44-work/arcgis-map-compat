@@ -1,110 +1,105 @@
-# Parquet URL notebook map
+# Minimal notebook map
 
-A reduced version of the supplied widget for creating a map and displaying
-Parquet layers from HTTP(S) URLs. Python sends layer definitions to the browser.
-The ArcGIS Maps SDK for JavaScript reads and renders the files.
+A small Python/JavaScript widget for feature-service layers, Parquet URLs
+(including signed blob-store URLs), and ArcGIS Online Parquet items.
+No React, frontend build, or ArcGIS Python dependency.
 
 ## Install
 
-Install the included wheel in the same Python environment as the notebook:
+Use Python 3.10+ in the notebook's environment:
 
 ```sh
-python -m pip install dist/arcgis_map_compat-0.2.0-py3-none-any.whl
+uv venv
+uv pip install -e .
 ```
 
-On Databricks, upload the wheel to your usual package location and install it
-with `%pip install /path/to/arcgis_map_compat-0.2.0-py3-none-any.whl`. Restart
-Python if the notebook environment requires it.
+For distribution, build a wheel with `uv build --wheel`, then install it in the
+target notebook environment. On Databricks use `%pip install /path/to/wheel.whl`
+and restart Python if required.
 
-Direct Python dependencies are `anywidget`, `ipywidgets`, and `traitlets`.
-Their own transitive dependencies are installed normally. The requirement
-`ipywidgets>=7.7.2,<9` accepts compatible versions already provided by the runtime.
-Use Python 3.10 or newer.
+Dependencies are anywidget and ipywidgets; their transitive dependencies include
+traitlets. Supports **ipywidgets 7.7.2 through 8.x**, including **anywidget 0.7.1**.
+Installation does not require upgrading a compatible installed widget version.
+The notebook frontend must also support custom widgets; installing Python
+packages cannot enable missing frontend support.
 
 ## Use
 
 ```python
+import os
 from arcgis_map_compat import Map
 
 m = Map()
-m.center = [46.8, 7.16]  # latitude, longitude, matching the current widget
+m.center = [46.8, 7.16]  # latitude, longitude
 m.zoom = 12
-m.content.add("https://example.com/data.parquet")
+m.content.add(os.environ["PARQUET_URL"])  # public or signed URL
 m
 ```
 
-Run another cell to add another layer to the displayed map:
+For other sources:
 
 ```python
-m.content.add("https://example.com/another.parquet?signature=...")
+m.content.add_feature_service(
+    os.environ["FEATURE_SERVICE_URL"],  # .../FeatureServer/0
+    token=os.environ.get("ARCGIS_TOKEN"),  # omit for public services
+)
+m.content.add_parquet_item(
+    os.environ["PARQUET_ITEM_ID"],  # 32-character ArcGIS Online item ID
+    token=os.environ.get("ARCGIS_TOKEN"),
+)
 ```
 
-The URL is passed through with its query string. URLs with an endpoint path
-instead of a `.parquet` filename also work when they serve valid Parquet data.
-Use the map's + and − controls to zoom.
+All three methods accept an optional `title`. Additions from later Python cells
+preserve browser pan/zoom. Setting `center` or `zoom` explicitly moves the map;
+their Python values do not track browser navigation.
 
-## Implementation
+## Sharing and credentials
 
-The frontend is a reduction of the existing React MapWidgetView. It keeps
-anywidget's React model hooks, the ArcGIS CDN loader, `arcgis-map`, `arcgis-zoom`,
-the `_view_state` binding, and `_webmap_dict` consumed by `WebMap.fromJSON()`.
-The internal WebMap JSON is a small transport dictionary. The Python backend
-uses dictionaries directly.
+**Map definitions, signed URLs, and tokens are not synchronized widget traits.**
+Python keeps them in memory and sends the complete WebMap JSON through a custom
+message when the renderer requests it. Updates use the same message channel.
+The iframe HTML contains only static renderer code.
 
-The generated Python models, GIS context adapter, general layer APIs and
-additional frontend controls have been removed. The public workflow is
-`Map()`, optional initial `center` and `zoom`, and `content.add(url)`.
-The local-image/raster-to-media-layer workflow is not supported.
+Saved widget state and exported HTML contain no runtime map definition or
+credentials. They cannot independently replay the map: recipients must rerun
+the notebook with their own data access. Without a live kernel the renderer
+displays a waiting message.
 
-The frame wrapper from the previous compatibility build is retained to isolate
-notebook AMD loaders from the ArcGIS CDN. React and its anywidget adapter are
-bundled in the frontend. Python installation uses the prebuilt assets.
+Obtain credentials from environment variables or a notebook secret store.
+This does not remove secrets you put in notebook source, print in outputs, or
+expose through other logging. The live browser necessarily receives credentials
+and downloaded data. SDK/network diagnostics can contain request URLs.
 
-This temporary distribution keeps the `arcgis_map_compat` namespace to coexist
-with the standard package. `RETAINED_FILES.patch` shows edits to retained source
-files and new source additions compared with the original uploaded `map/` tree.
+Tokens are scoped to a feature service or ArcGIS Online's sharing endpoint.
+Use one credential per service per map. Automatic token renewal, signed-URL
+refresh, layer editing/removal, enterprise portal items, and Python GIS objects
+are deliberately out of scope. Create a new map with fresh credentials when
+access expires.
 
-## Data access
+## Browser requirements
 
-Use browser-accessible public or signed URLs. The browser must reach the SDK CDN,
-basemap services and Parquet endpoint. A cross-origin data server needs CORS and
-support for byte-range reads. Driver-only paths such as DBFS paths need to be
-exposed through a browser-readable URL first.
+The browser must reach the ArcGIS 5.1 CDN, basemap services, and data endpoints.
+The SDK runs in an iframe to avoid notebook AMD-loader conflicts. The host must
+permit same-origin iframe access, inline scripts, and SDK modules.
 
-The SDK's ParquetLayer supports spatial data in WGS84 or Web Mercator with
-Snappy, GZIP, or uncompressed Parquet. Geometry can be inferred from GeoParquet
-metadata or recognized latitude/longitude columns.
+Blob storage needs CORS and byte-range support. Driver-only DBFS paths are not
+browser URLs. Parquet must contain supported spatial geometry, use WGS84 or
+Web Mercator, and use Snappy, GZIP, or no compression. Layer failures show a
+generic message without echoing URLs or tokens.
 
-Databricks rendering still needs a check in the target workspace. Its custom
-widget support and installed widget version are separate from Python package
-installation. `example.ipynb` provides that check after replacing its URL.
+Actual Databricks workspace rendering must still be checked on the target
+runtime; local widget-version compatibility is not a substitute.
 
-## Validation
-
-Local browser checks pass on ipywidgets 7.7.2 and 7.8.1 with classic Jupyter,
-and 8.1.9 with JupyterLab 4. They cover the initial map view, Parquet URL
-loading, zooming, and another URL added from a later Python cell. Python
-regression checks block imports of arcgis, pandas, Pydantic, GeoPandas and
-PyArrow. An occasional SDK startup message, `Host is not attached.`, occurs
-in classic Jupyter while these behavior checks still pass.
-
-Actual Databricks workspace rendering remains to be validated.
-
-## Development
-
-The frontend build is reproducible from the included source:
+## Development checks
 
 ```sh
-npm ci
-npm run build
-python -m pip wheel --no-deps . -w dist
+uv pip install playwright
+.venv/bin/python -m playwright install chromium
+.venv/bin/python -m unittest discover -s tests -v
+ARCGIS_BROWSER_LIVE=1 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Node.js and npm are development tools. The wheel includes the compiled frontend.
-The ArcGIS SDK is loaded from the existing 5.1 CDN configuration at runtime.
-
-Run the Python regression checks with:
-
-```sh
-python -m unittest discover -s tests -v
-```
+The optional live check uses the real CDN SDK against controlled feature-service,
+signed-URL Parquet, and AGOL item responses. `tests/points.parquet` is a tiny
+two-point GeoParquet fixture; reading it in Python requires no Parquet library.
+The app has no JavaScript build step or Node dependencies.
