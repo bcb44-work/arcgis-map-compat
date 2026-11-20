@@ -1,0 +1,12 @@
+{
+  "name": "arcgis-map-compat-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "devDependencies": {
+    "@anywidget/react": "0.2.2",
+    "esbuild": "0.27.4",
+    "react": "19.2.5",
+    "react-dom": "19.2.5"
+  }
+}
