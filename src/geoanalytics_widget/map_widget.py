@@ -23,15 +23,31 @@ class GIS:
 
 class MapBuilder:
     def __init__(self, gis: GIS | None = None) -> None:
+        """Collect Web Map inputs; GIS provides runtime context, not JSON fields.
+
+        Spec: https://developers.arcgis.com/web-map-specification/objects/webmap/
+        """
         self._gis = gis
         self._initial_state: tuple[Extent, int] | None = None
         self._layers: list[JSON] = []
         self._credentials: list[JSON] = []
 
     def set_initial_state(self, extent: Extent, sref: int) -> None:
+        """Store [xmin, ymin, xmax, ymax] and its WKID for the initial viewpoint.
+
+        JSON assembly is deferred until build().
+        Specs: https://developers.arcgis.com/web-map-specification/objects/initialState/
+        https://developers.arcgis.com/web-map-specification/objects/extent/
+        """
         self._initial_state = (extent, sref)
 
     def build(self) -> Map:
+        """Assemble Web Map JSON with a tiled basemap and operational layers.
+
+        Specs: https://developers.arcgis.com/web-map-specification/objects/webmap/
+        https://developers.arcgis.com/web-map-specification/objects/baseMap/
+        https://developers.arcgis.com/web-map-specification/objects/tiledMapServiceLayer/
+        """
         definition: JSON = {
             "version": "2.37",
             "baseMap": {
@@ -58,6 +74,8 @@ class MapBuilder:
                 raise ValueError("Extent minimums must not exceed maximums.")
             if not isinstance(sref, int) or isinstance(sref, bool) or sref <= 0:
                 raise ValueError("sref must be a positive WKID.")
+            # Without scale, the SDK fits targetGeometry; the WKID describes its coordinates.
+            # https://developers.arcgis.com/web-map-specification/objects/viewpoint/
             definition["initialState"] = {"viewpoint": {"targetGeometry": {
                 "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
                 "spatialReference": {"wkid": sref},
@@ -70,7 +88,11 @@ class MapBuilder:
     def add_parquet(
         self, url: str | list[str], *, title: str = "Parquet layer", options: JSON | None = None,
     ) -> None:
-        """Add a public or signed HTTP(S) Parquet URL, without reading it in Python."""
+        """Add one ParquetLayer with a files source; JavaScript reads the URLs.
+
+        Specs: https://developers.arcgis.com/web-map-specification/objects/parquetLayer/
+        https://developers.arcgis.com/web-map-specification/objects/parquetSourceFiles/
+        """
         urls = [url] if isinstance(url, str) else url
         if not isinstance(urls, list):
             raise TypeError("Pass a URL or a list of URLs.")
@@ -85,7 +107,10 @@ class MapBuilder:
         self, url: str, *, gis: GIS | None = None, title: str = "Feature layer",
         options: JSON | None = None,
     ) -> None:
-        """Add a FeatureServer/<layer ID> endpoint, optionally using an ArcGIS token."""
+        """Add an ArcGISFeatureLayer using its service URL; keep tokens outside JSON.
+
+        Spec: https://developers.arcgis.com/web-map-specification/objects/featureLayer/
+        """
         url = _http_url(url)
         parsed = urlsplit(url)
         if not re.search(r"/FeatureServer/\d+/?$", parsed.path, re.IGNORECASE):
@@ -102,7 +127,12 @@ class MapBuilder:
     def add_parquet_item(
         self, item_id: str, *, title: str = "Parquet layer", options: JSON | None = None,
     ) -> None:
-        """Add an ArcGIS Online Parquet item, optionally using an ArcGIS token."""
+        """Add a ParquetLayer with a portal-item source resolved in the builder's portal.
+
+        The source contains itemId, not a per-layer portal URL.
+        Specs: https://developers.arcgis.com/web-map-specification/objects/parquetLayer/
+        https://developers.arcgis.com/web-map-specification/objects/parquetSourcePortalItem/
+        """
         if not isinstance(item_id, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", item_id):
             raise ValueError("Pass a 32-character ArcGIS Online item ID.")
         self._add_layer(
@@ -117,6 +147,11 @@ class MapBuilder:
         token: str | None = None, server: str | None = None,
         options: JSON | None = None,
     ) -> None:
+        """Append a typed operational layer, with credentials stored separately.
+
+        Options overwrite layer fields without validation or a recursive merge.
+        Spec: https://developers.arcgis.com/web-map-specification/objects/operationalLayers/
+        """
         if not isinstance(title, str):
             raise TypeError("Layer title must be a string.")
         if token is not None and (not isinstance(token, str) or not token):
@@ -132,6 +167,10 @@ class Map(anywidget.AnyWidget):
     _esm = Path(__file__).parent / "map.js"
 
     def __init__(self, definition: JSON, credentials: list[JSON], portal_url: str | None) -> None:
+        """Snapshot Web Map JSON separately from runtime credentials and portal context.
+
+        Spec: https://developers.arcgis.com/web-map-specification/objects/webmap/
+        """
         super().__init__()
         self._webmap_dict = deepcopy(definition)
         self._credentials = deepcopy(credentials)
@@ -142,6 +181,11 @@ class Map(anywidget.AnyWidget):
     def _on_message(
         self, widget: anywidget.AnyWidget, content: JSON, buffers: list[memoryview],
     ) -> None:
+        """Publish the Web Map snapshot once, after JavaScript is ready.
+
+        Only definition is Web Map JSON; the surrounding message is widget transport.
+        Spec: https://developers.arcgis.com/web-map-specification/objects/webmap/
+        """
         if content.get("type") == "ready" and not self._published:
             self._published = True
             self.on_msg(self._on_message, remove=True)
@@ -153,6 +197,10 @@ class Map(anywidget.AnyWidget):
             })
 
     def close(self) -> None:
+        """Release local credentials and operationalLayers, without editing the JS map.
+
+        Spec: https://developers.arcgis.com/web-map-specification/objects/operationalLayers/
+        """
         if hasattr(self, "_credentials"):
             self._credentials.clear()
             self._webmap_dict["operationalLayers"].clear()
@@ -160,6 +208,11 @@ class Map(anywidget.AnyWidget):
 
 
 def _http_url(value: str) -> str:
+    """Check source URLs before constructing layers, not the layer JSON schema.
+
+    Specs: https://developers.arcgis.com/web-map-specification/objects/featureLayer/
+    https://developers.arcgis.com/web-map-specification/objects/parquetSourceFiles/
+    """
     if not isinstance(value, str):
         raise TypeError("Pass an HTTP(S) URL as a string.")
     value = value.strip()
