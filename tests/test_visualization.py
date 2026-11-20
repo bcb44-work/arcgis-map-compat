@@ -14,7 +14,7 @@ class BlockUnusedDependencies(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, BlockUnusedDependencies())
-from arcgis_map_compat import MapBuilder
+from arcgis_map_compat import GIS, MapBuilder
 from ipywidgets import Widget
 from ipywidgets.embed import embed_minimal_html
 
@@ -71,8 +71,9 @@ class VisualizationTests(unittest.TestCase):
 
     def test_feature_service_and_portal_credentials(self):
         url = "https://example.com/arcgis/rest/services/Test/FeatureServer/0"
-        self.builder.add_feature_service(url, token="feature-secret")
-        self.builder.add_parquet_item("a" * 32, token="portal-secret")
+        self.builder = MapBuilder(GIS("https://portal.example.com/arcgis/", "portal-secret"))
+        self.builder.add_feature_service(url, gis=GIS("https://other.example.com", "feature-secret"))
+        self.builder.add_parquet_item("a" * 32)
         widget, messages = self.build()
         widget._on_message(widget, {"type": "ready"}, [])
         message = messages[-1]
@@ -83,8 +84,37 @@ class VisualizationTests(unittest.TestCase):
         )
         self.assertEqual(message["credentials"], [
             {"server": url.rsplit("/", 1)[0], "token": "feature-secret"},
-            {"server": "https://www.arcgis.com/sharing/rest", "token": "portal-secret"},
+            {"server": "https://portal.example.com/arcgis/sharing/rest", "token": "portal-secret"},
         ])
+        self.assertEqual(message["portal_url"], "https://portal.example.com/arcgis/")
+
+    def test_builder_gis_is_used_by_feature_services(self):
+        self.builder = MapBuilder(GIS("https://portal.example.com", "shared-token"))
+        self.builder.add_feature_service("https://services.example.com/Test/FeatureServer/0")
+        widget, _ = self.build()
+        self.assertEqual(widget._credentials, [{
+            "server": "https://services.example.com/Test/FeatureServer", "token": "shared-token",
+        }])
+
+    def test_layer_options_are_merged_last_without_validation(self):
+        options = {
+            "id": "user-defined-id", "title": "Override", "opacity": "SDK decides",
+            "layerDefinition": {"definitionExpression": "VALUE > 10"},
+            "futureOption": {"nested": [1, 2, 3]},
+        }
+        self.builder.add_parquet("https://example.com/data.parquet", options=options)
+        self.builder.add_feature_service(
+            "https://example.com/Test/FeatureServer/0", options=options)
+        self.builder.add_parquet_item("a" * 32, options=options)
+        widget, _ = self.build()
+        for layer in widget._webmap_dict["operationalLayers"]:
+            for key, value in options.items():
+                self.assertEqual(layer[key], value)
+        options["layerDefinition"]["definitionExpression"] = "CHANGED"
+        self.assertEqual(
+            widget._webmap_dict["operationalLayers"][0]["layerDefinition"]["definitionExpression"],
+            "VALUE > 10",
+        )
 
     def test_parquet_url_list_creates_one_layer(self):
         urls = [
@@ -117,7 +147,7 @@ class VisualizationTests(unittest.TestCase):
         original = deepcopy(first._webmap_dict)
         self.builder.set_initial_state((0, 0, 1, 1), sref=4326)
         self.builder.add_feature_service(
-            "https://example.com/Test/FeatureServer/0", token="second-secret")
+            "https://example.com/Test/FeatureServer/0", gis=GIS("https://example.com", "second-secret"))
         second, _ = self.build()
         self.assertEqual(first._webmap_dict, original)
         self.assertEqual(first._credentials, [])
@@ -135,7 +165,8 @@ class VisualizationTests(unittest.TestCase):
         url = "https://example.com/data.parquet?signature=SIGNED_SECRET"
         self.builder.add_parquet(url)
         self.builder.add_feature_service(
-            "https://example.com/rest/services/Test/FeatureServer/0", token="TOKEN_SECRET"
+            "https://example.com/rest/services/Test/FeatureServer/0",
+            gis=GIS("https://example.com", "TOKEN_SECRET"),
         )
         widget, messages = self.build()
         html = StringIO()
@@ -147,6 +178,7 @@ class VisualizationTests(unittest.TestCase):
         self.assertNotIn("_webmap_dict", widget.get_state())
         widget._on_message(widget, {"type": "ready"}, [])
         self.assertIn("SIGNED_SECRET", json.dumps(messages[-1]))
+        self.assertNotIn("TOKEN_SECRET", repr(GIS("https://example.com", "TOKEN_SECRET")))
 
     def test_bad_layer_inputs_leave_builder_unchanged(self):
         original = deepcopy(self.builder._layers)
@@ -167,7 +199,8 @@ class VisualizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.builder.add_parquet_item("bad")
         with self.assertRaises(ValueError):
-            self.builder.add_parquet_item("a" * 32, token=42)
+            self.builder.add_feature_service(
+                "https://example.com/Test/FeatureServer/0", gis=GIS("https://example.com", 42))
         self.assertEqual(self.builder._layers, original)
         self.assertEqual(self.builder._credentials, [])
 

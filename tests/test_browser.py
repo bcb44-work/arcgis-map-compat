@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from arcgis_map_compat import MapBuilder
+from arcgis_map_compat import GIS, MapBuilder
 
 try:
     from playwright.sync_api import sync_playwright
@@ -41,7 +41,8 @@ const identity = {
   registerToken(value) { calls.tokens.push(value); },
   destroyCredentials() { calls.credentialCleanup++; }
 };
-window.$arcgis = {import:async () => [WebMap, MapView, identity]};
+window.config = {};
+window.$arcgis = {import:async () => [WebMap, MapView, identity, config]};
 """
 
 HOST = """async source => {
@@ -112,7 +113,8 @@ class BrowserTests(unittest.TestCase):
     def test_initial_handshake_disconnects_and_ignores_later_messages(self):
         self.builder.add_parquet("https://example.com/test.parquet?signature=SIGNED_SECRET")
         self.builder.add_feature_service(
-            "https://example.com/rest/services/Test/FeatureServer/0", token="TOKEN_SECRET"
+            "https://example.com/rest/services/Test/FeatureServer/0",
+            gis=GIS("https://example.com", "TOKEN_SECRET"),
         )
         self.mount()
         self.loaded()
@@ -148,24 +150,33 @@ class BrowserTests(unittest.TestCase):
     @unittest.skipUnless(os.getenv("ARCGIS_BROWSER_LIVE"), "Set ARCGIS_BROWSER_LIVE=1 for CDN check")
     def test_real_sdk_feature_service_and_parquet(self):
         self.page.route("https://data.test/**", self.serve_data)
-        self.page.route("https://www.arcgis.com/sharing/rest/**", self.serve_data)
+        self.page.route("https://portal.test/arcgis/sharing/rest/**", self.serve_data)
         self.requests = []
+        self.builder = MapBuilder(GIS("https://portal.test/arcgis", "PORTAL_TEST_TOKEN"))
         self.builder.set_initial_state((-119, 33, -117, 35), sref=4326)
         self.builder.add_feature_service(
-            "https://data.test/rest/services/Points/FeatureServer/0", token="TEST_TOKEN"
+            "https://data.test/rest/services/Points/FeatureServer/0",
+            gis=GIS("https://feature-portal.test", "TEST_TOKEN"),
+            options={"opacity": 0.5, "layerDefinition": {"definitionExpression": "OBJECTID = 1"}},
         )
         self.builder.add_parquet([
             "https://data.test/points.parquet?signature=TEST_SIGNATURE",
             "https://data.test/second.parquet?signature=SECOND_SIGNATURE",
         ])
-        self.builder.add_parquet_item("a" * 32, token="PORTAL_TEST_TOKEN")
-        self.mount(real=True)
-        self.loaded()
+        self.builder.add_parquet_item("a" * 32, options={"opacity": 0.7})
+        with self.page.expect_request(
+            lambda request: "/query?" in request.url and "OBJECTID%20%3D%201" in request.url,
+            timeout=120000,
+        ):
+            self.mount(real=True)
+            self.loaded()
         self.assertGreater(self.frame.locator("canvas").count(), 0)
         self.assertTrue(any("token=TEST_TOKEN" in url for url in self.requests))
         self.assertTrue(any("signature=TEST_SIGNATURE" in url for url in self.requests))
         self.assertTrue(any("signature=SECOND_SIGNATURE" in url for url in self.requests))
         self.assertTrue(any("/items/" in url and "token=PORTAL_TEST_TOKEN" in url
+                            for url in self.requests))
+        self.assertTrue(any(url.startswith("https://portal.test/arcgis/sharing/rest/content/items/")
                             for url in self.requests))
 
     def serve_data(self, route):
@@ -179,7 +190,7 @@ class BrowserTests(unittest.TestCase):
         if "/portals/self" in route.request.url:
             return route.fulfill(body=json.dumps({
                 "id": "test", "name": "ArcGIS Online", "isPortal": False,
-                "portalHostname": "www.arcgis.com", "helperServices": {},
+                "portalHostname": "portal.test", "helperServices": {},
                 "user": {"username": "test", "orgId": "test"},
             }), headers=headers, content_type="application/json")
         if "/items/" in route.request.url and "token=PORTAL_TEST_TOKEN" not in route.request.url:

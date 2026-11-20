@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import re
@@ -14,8 +15,15 @@ Extent = list[float] | tuple[float, float, float, float]
 JSON = dict[str, Any]
 
 
+@dataclass
+class GIS:
+    portal_url: str
+    token: str | None = field(repr=False)
+
+
 class MapBuilder:
-    def __init__(self) -> None:
+    def __init__(self, gis: GIS | None = None) -> None:
+        self._gis = gis
         self._initial_state: tuple[Extent, int] | None = None
         self._layers: list[JSON] = []
         self._credentials: list[JSON] = []
@@ -54,9 +62,14 @@ class MapBuilder:
                 "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
                 "spatialReference": {"wkid": sref},
             }}}
-        return Map(definition, self._credentials)
+        return Map(
+            definition, self._credentials,
+            self._gis.portal_url if self._gis is not None else None,
+        )
 
-    def add_parquet(self, url: str | list[str], *, title: str = "Parquet layer") -> None:
+    def add_parquet(
+        self, url: str | list[str], *, title: str = "Parquet layer", options: JSON | None = None,
+    ) -> None:
         """Add a public or signed HTTP(S) Parquet URL, without reading it in Python."""
         urls = [url] if isinstance(url, str) else url
         if not isinstance(urls, list):
@@ -64,10 +77,13 @@ class MapBuilder:
         if not urls:
             raise ValueError("Pass at least one Parquet URL.")
         urls = [_http_url(value) for value in urls]
-        self._add("ParquetLayer", title, {"source": {"type": "files", "urls": urls}})
+        self._add_layer(
+            "ParquetLayer", title, {"source": {"type": "files", "urls": urls}}, options=options,
+        )
 
     def add_feature_service(
-        self, url: str, *, token: str | None = None, title: str = "Feature layer",
+        self, url: str, *, gis: GIS | None = None, title: str = "Feature layer",
+        options: JSON | None = None,
     ) -> None:
         """Add a FeatureServer/<layer ID> endpoint, optionally using an ArcGIS token."""
         url = _http_url(url)
@@ -77,22 +93,29 @@ class MapBuilder:
         server = parsed._replace(
             path=parsed.path.rstrip("/").rsplit("/", 1)[0], query="", fragment=""
         ).geturl()
-        self._add("ArcGISFeatureLayer", title, {"url": url}, token=token, server=server)
+        gis = gis if gis is not None else self._gis
+        self._add_layer(
+            "ArcGISFeatureLayer", title, {"url": url},
+            token=gis.token if gis is not None else None, server=server, options=options,
+        )
 
     def add_parquet_item(
-        self, item_id: str, *, token: str | None = None, title: str = "Parquet layer",
+        self, item_id: str, *, title: str = "Parquet layer", options: JSON | None = None,
     ) -> None:
         """Add an ArcGIS Online Parquet item, optionally using an ArcGIS token."""
         if not isinstance(item_id, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", item_id):
             raise ValueError("Pass a 32-character ArcGIS Online item ID.")
-        self._add(
+        self._add_layer(
             "ParquetLayer", title, {"source": {"type": "portal-item", "itemId": item_id}},
-            token=token, server="https://www.arcgis.com/sharing/rest",
+            token=self._gis.token if self._gis is not None else None,
+            server=self._gis.portal_url.rstrip("/") + "/sharing/rest" if self._gis is not None else None,
+            options=options,
         )
 
-    def _add(
+    def _add_layer(
         self, layer_type: str, title: str, source: JSON, *,
         token: str | None = None, server: str | None = None,
+        options: JSON | None = None,
     ) -> None:
         if not isinstance(title, str):
             raise TypeError("Layer title must be a string.")
@@ -101,17 +124,18 @@ class MapBuilder:
         if token is not None:
             self._credentials.append({"server": server, "token": token})
         self._layers.append({
-            "id": uuid4().hex, "layerType": layer_type, "title": title, **source,
+            "id": uuid4().hex, "layerType": layer_type, "title": title, **source, **(options or {}),
         })
 
 
 class Map(anywidget.AnyWidget):
     _esm = Path(__file__).parent / "map.js"
 
-    def __init__(self, definition: JSON, credentials: list[JSON]) -> None:
+    def __init__(self, definition: JSON, credentials: list[JSON], portal_url: str | None) -> None:
         super().__init__()
         self._webmap_dict = deepcopy(definition)
         self._credentials = deepcopy(credentials)
+        self._portal_url = portal_url
         self._published = False
         self.on_msg(self._on_message)
 
@@ -125,6 +149,7 @@ class Map(anywidget.AnyWidget):
                 "type": "map",
                 "definition": deepcopy(self._webmap_dict),
                 "credentials": deepcopy(self._credentials),
+                "portal_url": self._portal_url,
             })
 
     def close(self) -> None:

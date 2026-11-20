@@ -27,7 +27,7 @@ function mount(model) {
         clearTimeout(timeout);
         resolve(Promise.resolve().then(() => window.$arcgis.import([
           "@arcgis/core/WebMap.js", "@arcgis/core/views/MapView.js",
-          "@arcgis/core/identity/IdentityManager.js",
+          "@arcgis/core/identity/IdentityManager.js", "@arcgis/core/config.js",
         ])));
       };
       script.onerror = () => {
@@ -42,9 +42,10 @@ function mount(model) {
     if (disposed) return;
     status.textContent = "Loading map...";
     sdk ??= loadSdk();
-    const [WebMap, MapView, identity] = await sdk;
+    const [WebMap, MapView, identity, config] = await sdk;
     if (disposed) return;
     for (const credential of message.credentials) identity.registerToken(credential);
+    if (message.portal_url) config.portalUrl = message.portal_url;
     map = WebMap.fromJSON(message.definition);
     await map.load();
     if (disposed) return;
