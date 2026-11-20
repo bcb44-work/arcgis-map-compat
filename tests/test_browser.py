@@ -189,7 +189,7 @@ class BrowserTests(unittest.TestCase):
             }}), headers=headers, content_type="application/json")
         if "signedurl=true" in route.request.url:
             return route.fulfill(
-                body=json.dumps({"url": "https://data.test/points.parquet?signature=PORTAL_SIGNATURE"}),
+                body=json.dumps({"signedUrl": "https://data.test/points.parquet?signature=PORTAL_SIGNATURE"}),
                 headers=headers, content_type="application/json")
         path = urlsplit(route.request.url).path
         if path.endswith((".parquet", "/data")):
