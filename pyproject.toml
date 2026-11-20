@@ -17,4 +17,4 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-arcgis_map_compat = ["map.js"]
+arcgis_map_compat = ["map.js", "py.typed"]

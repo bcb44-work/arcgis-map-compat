@@ -11,9 +11,7 @@ function mount(model) {
   let disposed = false;
   let view;
   let map;
-  let previousViewpoint;
   let sdk;
-  let queue = Promise.resolve();
 
   function loadSdk() {
     return new Promise((resolve, reject) => {
@@ -47,45 +45,26 @@ function mount(model) {
     const [WebMap, MapView, identity] = await sdk;
     if (disposed) return;
     for (const credential of message.credentials) identity.registerToken(credential);
-    const next = WebMap.fromJSON(message.definition);
-    try {
-      await next.load();
-      if (disposed) return;
-      if (!map) {
-        map = next;
-        view = new MapView({container, map});
-        await view.when();
-      } else {
-        // Add only new IDs: never reset the map when another Python cell adds a layer.
-        for (const layer of next.layers.toArray()) {
-          if (!map.findLayerById(layer.id)) {
-            next.layers.remove(layer);
-            map.add(layer);
-          }
-        }
-      }
-      if (disposed) return;
-      const viewpoint = message.definition.initialState.viewpoint;
-      if (JSON.stringify(viewpoint) !== previousViewpoint) {
-        await view.goTo(next.initialViewProperties.viewpoint, {animate: false});
-        previousViewpoint = JSON.stringify(viewpoint);
-      }
-      const results = await Promise.allSettled(
-        map.layers.toArray().map(layer => view.whenLayerView(layer)),
-      );
-      if (!disposed) {
-        status.textContent = results.some(result => result.status === "rejected")
-          ? "A layer could not load. Check access, URL expiry, CORS, and Parquet format."
-          : "";
-      }
-    } finally {
-      if (next !== map) next.destroy();
+    map = WebMap.fromJSON(message.definition);
+    await map.load();
+    if (disposed) return;
+    view = new MapView({container, map});
+    await view.when();
+    if (disposed) return;
+    const results = await Promise.allSettled(
+      map.layers.toArray().map(layer => view.whenLayerView(layer)),
+    );
+    if (!disposed) {
+      status.textContent = results.some(result => result.status === "rejected")
+        ? "A layer could not load. Check access, URL expiry, CORS, and Parquet format."
+        : "";
     }
   }
 
   function receive(message) {
     if (message.type !== "map" || disposed) return;
-    queue = queue.then(() => apply(message)).catch(() => {
+    model.off("msg:custom", receive);
+    void apply(message).catch(() => {
       if (!disposed) status.textContent = "Map could not load. Check network access and credentials.";
     });
   }

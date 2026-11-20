@@ -14,48 +14,68 @@ class BlockUnusedDependencies(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, BlockUnusedDependencies())
-from arcgis_map_compat import Map
+from arcgis_map_compat import MapBuilder
 from ipywidgets import Widget
 from ipywidgets.embed import embed_minimal_html
 
 
 class VisualizationTests(unittest.TestCase):
     def setUp(self):
-        self.map = Map()
-        self.addCleanup(self.map.close)
-        self.messages = []
-        self.send = patch.object(self.map, "send", self.messages.append)
-        self.send.start()
-        self.addCleanup(self.send.stop)
+        self.builder = MapBuilder()
 
-    def test_initial_center_zoom_and_explicit_updates(self):
-        self.map.center = [46.8, 7.16]
-        self.map.zoom = 12
-        self.assertEqual(self.map.center, [46.8, 7.16])
-        state = self.messages[-1]["definition"]["initialState"]["viewpoint"]
-        self.assertEqual(state["targetGeometry"]["spatialReference"]["wkid"], 3857)
-        self.assertGreater(state["scale"], 0)
-        center = self.map.center
-        center[0] = 0
-        self.assertEqual(self.map.center, [46.8, 7.16])
+    def build(self):
+        widget = self.builder.build()
+        self.addCleanup(widget.close)
+        messages = []
+        sender = patch.object(widget, "send", messages.append)
+        sender.start()
+        self.addCleanup(sender.stop)
+        return widget, messages
+
+    def test_build_uses_final_extent_and_sref(self):
+        self.builder.set_initial_state((0, 0, 1000, 1000), sref=3857)
+        extent = [-119, 33, -117, 35]
+        self.builder.set_initial_state(extent, sref=4326)
+        widget, messages = self.build()
+        state = widget._webmap_dict["initialState"]["viewpoint"]
+        self.assertEqual(state, {"targetGeometry": {
+            "xmin": -119, "ymin": 33, "xmax": -117, "ymax": 35,
+            "spatialReference": {"wkid": 4326},
+        }})
+        extent[0] = -120
+        second, _ = self.build()
+        self.assertEqual(
+            second._webmap_dict["initialState"]["viewpoint"]["targetGeometry"]["xmin"],
+            -120,
+        )
+        self.assertEqual(state["targetGeometry"]["xmin"], -119)
+        self.assertEqual(messages, [])
+
+    def test_missing_extent_uses_sdk_defaults(self):
+        widget, _ = self.build()
+        self.assertNotIn("initialState", widget._webmap_dict)
 
     def test_signed_urls_and_multiple_layers(self):
         url = "https://example.com/download?signature=a%2Bb&file=layer"
-        self.map.content.add(url)
-        original = deepcopy(self.messages[-1])
-        self.map.content.add(url)
-        layers = self.messages[-1]["definition"]["operationalLayers"]
+        self.builder.add_parquet(url)
+        original = deepcopy(self.builder._layers)
+        self.builder.add_parquet(url)
+        widget, messages = self.build()
+        layers = widget._webmap_dict["operationalLayers"]
         self.assertEqual(len(layers), 2)
         self.assertNotEqual(layers[0]["id"], layers[1]["id"])
         self.assertEqual(layers[0]["layerType"], "ParquetLayer")
         self.assertEqual(layers[0]["source"], {"type": "files", "urls": [url]})
-        self.assertEqual(len(original["definition"]["operationalLayers"]), 1)
+        self.assertEqual(len(original), 1)
+        self.assertEqual(messages, [])
 
     def test_feature_service_and_portal_credentials(self):
         url = "https://example.com/arcgis/rest/services/Test/FeatureServer/0"
-        self.map.content.add_feature_service(url, token="feature-secret")
-        self.map.content.add_parquet_item("a" * 32, token="portal-secret")
-        message = self.messages[-1]
+        self.builder.add_feature_service(url, token="feature-secret")
+        self.builder.add_parquet_item("a" * 32, token="portal-secret")
+        widget, messages = self.build()
+        widget._on_message(widget, {"type": "ready"}, [])
+        message = messages[-1]
         self.assertEqual(message["definition"]["operationalLayers"][0]["url"], url)
         self.assertEqual(
             message["definition"]["operationalLayers"][1]["source"],
@@ -66,56 +86,105 @@ class VisualizationTests(unittest.TestCase):
             {"server": "https://www.arcgis.com/sharing/rest", "token": "portal-secret"},
         ])
 
-    def test_each_ready_request_replays_current_snapshot(self):
-        self.map.content.add("https://example.com/first.parquet")
-        first = deepcopy(self.messages[-1])
-        self.map._on_message(self.map, {"type": "ready"}, [])
-        self.assertEqual(self.messages[-1], first)
-        self.map.content.add("https://example.com/second.parquet")
-        self.map._on_message(self.map, {"type": "ready"}, [])
-        self.assertEqual(len(self.messages[-1]["definition"]["operationalLayers"]), 2)
-        count = len(self.messages)
-        self.map._on_message(self.map, {"type": "unknown"}, [])
-        self.assertEqual(len(self.messages), count)
+    def test_parquet_url_list_creates_one_layer(self):
+        urls = [
+            "https://example.com/first.parquet?signature=a%2Bb",
+            "https://example.com/download?signature=c%2Fd",
+        ]
+        expected = list(urls)
+        self.builder.add_parquet(urls, title="Combined")
+        urls.clear()
+        widget, _ = self.build()
+        layers = widget._webmap_dict["operationalLayers"]
+        self.assertEqual(len(layers), 1)
+        self.assertEqual(layers[0]["title"], "Combined")
+        self.assertEqual(layers[0]["source"], {"type": "files", "urls": expected})
+
+    def test_ready_publishes_once_and_disconnects(self):
+        self.builder.add_parquet("https://example.com/first.parquet")
+        widget, messages = self.build()
+        widget._on_message(widget, {"type": "unknown"}, [])
+        self.assertEqual(messages, [])
+        widget._on_message(widget, {"type": "ready"}, [])
+        first = deepcopy(messages[0])
+        widget._on_message(widget, {"type": "ready"}, [])
+        self.assertEqual(messages, [first])
+        self.assertNotIn(widget._on_message, widget._msg_callbacks.callbacks)
+
+    def test_builds_are_independent_of_later_builder_changes(self):
+        self.builder.add_parquet("https://example.com/first.parquet")
+        first, messages = self.build()
+        original = deepcopy(first._webmap_dict)
+        self.builder.set_initial_state((0, 0, 1, 1), sref=4326)
+        self.builder.add_feature_service(
+            "https://example.com/Test/FeatureServer/0", token="second-secret")
+        second, _ = self.build()
+        self.assertEqual(first._webmap_dict, original)
+        self.assertEqual(first._credentials, [])
+        self.assertEqual(len(second._webmap_dict["operationalLayers"]), 2)
+        self.assertNotIn("initialState", first._webmap_dict)
+        self.assertIn("initialState", second._webmap_dict)
+        self.assertEqual(messages, [])
+        self.assertFalse(hasattr(first, "center"))
+        self.assertFalse(hasattr(first, "zoom"))
+        self.assertFalse(hasattr(first, "extent"))
+        self.assertFalse(hasattr(first, "content"))
 
     def test_secrets_absent_from_serialized_state_and_html(self):
         from io import StringIO
         url = "https://example.com/data.parquet?signature=SIGNED_SECRET"
-        self.map.content.add(url)
-        self.map.content.add_feature_service(
+        self.builder.add_parquet(url)
+        self.builder.add_feature_service(
             "https://example.com/rest/services/Test/FeatureServer/0", token="TOKEN_SECRET"
         )
+        widget, messages = self.build()
         html = StringIO()
-        embed_minimal_html(html, views=[self.map])
+        embed_minimal_html(html, views=[widget])
         serialized = json.dumps(Widget.get_manager_state()) + html.getvalue()
         for secret in (url, "SIGNED_SECRET", "TOKEN_SECRET"):
             self.assertNotIn(secret, serialized)
-            self.assertNotIn(secret, repr(self.map))
-        self.assertNotIn("_webmap_dict", self.map.get_state())
-        self.assertIn("SIGNED_SECRET", json.dumps(self.messages[-1]))
+            self.assertNotIn(secret, repr(widget))
+        self.assertNotIn("_webmap_dict", widget.get_state())
+        widget._on_message(widget, {"type": "ready"}, [])
+        self.assertIn("SIGNED_SECRET", json.dumps(messages[-1]))
 
-    def test_bad_inputs_leave_map_unchanged(self):
-        original = deepcopy(self.map._webmap_dict)
-        for value in ("file:///tmp/data.parquet", "dbfs:/data.parquet", "not a URL"):
+    def test_bad_layer_inputs_leave_builder_unchanged(self):
+        original = deepcopy(self.builder._layers)
+        for value in (
+            "file:///tmp/data.parquet", "dbfs:/data.parquet", "not a URL", [],
+            ["https://example.com/valid.parquet", "not a URL"],
+        ):
             with self.assertRaises(ValueError):
-                self.map.content.add(value)
-        with self.assertRaises(TypeError):
-            self.map.content.add({"url": "https://example.com/data.parquet"})
-        for value in ([91, 0], [0, 181], [float("nan"), 0], [True, 0], [0]):
+                self.builder.add_parquet(value)
+        for value in (
+            {"url": "https://example.com/data.parquet"},
+            ["https://example.com/valid.parquet", 42],
+        ):
+            with self.assertRaises(TypeError):
+                self.builder.add_parquet(value)
+        with self.assertRaises(ValueError):
+            self.builder.add_feature_service("https://example.com/FeatureServer")
+        with self.assertRaises(ValueError):
+            self.builder.add_parquet_item("bad")
+        with self.assertRaises(ValueError):
+            self.builder.add_parquet_item("a" * 32, token=42)
+        self.assertEqual(self.builder._layers, original)
+        self.assertEqual(self.builder._credentials, [])
+
+    def test_invalid_extent_is_rejected_at_build(self):
+        for extent in (
+            [0], [0, 0, float("nan"), 1], [True, 0, 1, 1],
+            [2, 0, 1, 1], [0, 2, 1, 1],
+        ):
+            builder = MapBuilder()
+            builder.set_initial_state(extent, sref=4326)
             with self.assertRaises(ValueError):
-                self.map.center = value
-        for value in ("12", True, -1, 24):
+                builder.build()
+        for sref in (None, "4326", True, -1, 0):
+            builder = MapBuilder()
+            builder.set_initial_state((0, 0, 1, 1), sref=sref)
             with self.assertRaises(ValueError):
-                self.map.zoom = value
-        with self.assertRaises(ValueError):
-            self.map.content.add_feature_service("https://example.com/FeatureServer")
-        with self.assertRaises(ValueError):
-            self.map.content.add_parquet_item("bad")
-        with self.assertRaises(ValueError):
-            self.map.content.add_parquet_item("a" * 32, token=42)
-        self.assertEqual(self.map._webmap_dict, original)
-        self.assertEqual(self.map._credentials, [])
-        self.assertEqual(self.messages, [])
+                builder.build()
 
 
 if __name__ == "__main__":

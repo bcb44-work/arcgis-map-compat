@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from arcgis_map_compat import Map
+from arcgis_map_compat import MapBuilder
 
 try:
     from playwright.sync_api import sync_playwright
@@ -19,24 +19,19 @@ window.calls = {tokens:[], maps:[], views:[], credentialCleanup:0};
 class Layers {
   constructor(items) { this.items = items; }
   toArray() { return [...this.items]; }
-  remove(layer) { this.items = this.items.filter(item => item !== layer); }
 }
 class WebMap {
   static fromJSON(json) { return new WebMap(json); }
   constructor(json) {
     this.layers = new Layers(json.operationalLayers);
-    this.initialViewProperties = {viewpoint:json.initialState.viewpoint};
     calls.maps.push(this);
   }
   async load() { if (window.hold) await window.hold; }
-  findLayerById(id) { return this.layers.items.find(layer => layer.id === id); }
-  add(layer) { this.layers.items.push(layer); }
   destroy() { this.destroyed = true; }
 }
 class MapView {
-  constructor(options) { Object.assign(this, options); this.gotos=[]; calls.views.push(this); }
+  constructor(options) { Object.assign(this, options); calls.views.push(this); }
   async when() {}
-  async goTo(value) { this.gotos.push(value); }
   async whenLayerView(layer) {
     if (layer.title === "Fail") throw new Error("SECRET_URL_MUST_NOT_BE_SHOWN");
   }
@@ -84,14 +79,16 @@ class BrowserTests(unittest.TestCase):
     def setUp(self):
         self.page = self.browser.new_page()
         self.addCleanup(self.page.close)
-        self.map = Map()
+        self.builder = MapBuilder()
+
+    def mount(self, *, real=False):
+        self.map = self.builder.build()
         self.addCleanup(self.map.close)
         self.messages = []
         sender = patch.object(self.map, "send", self.messages.append)
         sender.start()
         self.addCleanup(sender.stop)
 
-    def mount(self, *, real=False):
         if not real:
             self.page.route("https://js.arcgis.com/5.1/core.js",
                             lambda route: route.fulfill(body=FAKE_SDK, content_type="text/javascript"))
@@ -112,30 +109,31 @@ class BrowserTests(unittest.TestCase):
                                      timeout=120000)
         self.assertEqual(self.frame.locator("[role=status]").inner_text(), "")
 
-    def test_handshake_incremental_layers_and_local_navigation(self):
-        self.map.content.add("https://example.com/test.parquet?signature=SIGNED_SECRET")
+    def test_initial_handshake_disconnects_and_ignores_later_messages(self):
+        self.builder.add_parquet("https://example.com/test.parquet?signature=SIGNED_SECRET")
+        self.builder.add_feature_service(
+            "https://example.com/rest/services/Test/FeatureServer/0", token="TOKEN_SECRET"
+        )
         self.mount()
         self.loaded()
         self.assertNotIn("SIGNED_SECRET", self.page.locator("iframe").get_attribute("srcdoc"))
-        self.frame.evaluate("calls.views[0].gotos.push('browser navigation')")
-        self.map.content.add_feature_service(
-            "https://example.com/rest/services/Test/FeatureServer/0", token="TOKEN_SECRET"
-        )
-        self.publish()
-        self.frame.wait_for_function("calls.maps[0].layers.items.length === 2")
-        self.loaded()
+        self.assertEqual(self.page.evaluate("window.listenerCount()"), 0)
+        self.assertEqual(self.page.evaluate("sent"), [{"type": "ready"}])
+        self.assertEqual(len(self.messages), 1)
+        self.assertEqual(self.frame.evaluate("calls.maps[0].layers.items.length"), 2)
         self.assertEqual(self.frame.evaluate("calls.views.length"), 1)
-        self.assertEqual(self.frame.evaluate("calls.views[0].gotos.length"), 2)
         self.assertEqual(self.frame.evaluate("calls.tokens[0].token"), "TOKEN_SECRET")
-        self.map.zoom = 8
+        self.frame.evaluate("calls.views[0].zoom = 8")
         self.publish()
-        self.frame.wait_for_function("calls.views[0].gotos.length === 3")
+        self.assertEqual(self.frame.evaluate("calls.maps.length"), 1)
+        self.assertEqual(self.frame.evaluate("calls.views[0].zoom"), 8)
+        self.assertEqual(self.page.evaluate("sent"), [{"type": "ready"}])
         self.page.evaluate("window.dispose()")
         self.assertEqual(self.page.evaluate("window.listenerCount()"), 0)
         self.assertEqual(self.page.locator("iframe").count(), 0)
 
     def test_failures_are_visible_without_echoing_secrets(self):
-        self.map.content.add("https://example.com/test.parquet?signature=SECRET", title="Fail")
+        self.builder.add_parquet("https://example.com/test.parquet?signature=SECRET", title="Fail")
         self.mount()
         self.frame.wait_for_function(
             "document.querySelector('[role=status]').textContent.startsWith('A layer could not')")
@@ -152,20 +150,21 @@ class BrowserTests(unittest.TestCase):
         self.page.route("https://data.test/**", self.serve_data)
         self.page.route("https://www.arcgis.com/sharing/rest/**", self.serve_data)
         self.requests = []
-        self.map.center = [34, -118]
-        self.map.zoom = 8
-        self.map.content.add_feature_service(
+        self.builder.set_initial_state((-119, 33, -117, 35), sref=4326)
+        self.builder.add_feature_service(
             "https://data.test/rest/services/Points/FeatureServer/0", token="TEST_TOKEN"
         )
-        self.map.content.add("https://data.test/points.parquet?signature=TEST_SIGNATURE")
+        self.builder.add_parquet([
+            "https://data.test/points.parquet?signature=TEST_SIGNATURE",
+            "https://data.test/second.parquet?signature=SECOND_SIGNATURE",
+        ])
+        self.builder.add_parquet_item("a" * 32, token="PORTAL_TEST_TOKEN")
         self.mount(real=True)
         self.loaded()
         self.assertGreater(self.frame.locator("canvas").count(), 0)
         self.assertTrue(any("token=TEST_TOKEN" in url for url in self.requests))
         self.assertTrue(any("signature=TEST_SIGNATURE" in url for url in self.requests))
-        self.map.content.add_parquet_item("a" * 32, token="PORTAL_TEST_TOKEN")
-        self.publish()
-        self.loaded()
+        self.assertTrue(any("signature=SECOND_SIGNATURE" in url for url in self.requests))
         self.assertTrue(any("/items/" in url and "token=PORTAL_TEST_TOKEN" in url
                             for url in self.requests))
 

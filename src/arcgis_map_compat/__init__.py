@@ -1,3 +1,3 @@
-from .map_widget import Map
+from .map_widget import MapBuilder
 
-__all__ = ["Map"]
+__all__ = ["MapBuilder"]
