@@ -1,3 +1,3 @@
-from .map_widget import GIS, MapBuilder
+from .map_widget import Basemap, GIS, MapBuilder
 
-__all__ = ["GIS", "MapBuilder"]
+__all__ = ["Basemap", "GIS", "MapBuilder"]

@@ -21,6 +21,17 @@ class GIS:
     token: str | None = field(repr=False)
 
 
+@dataclass
+class Basemap:
+    """Basemap inputs, assembled at build time without schema validation.
+
+    Spec: https://developers.arcgis.com/web-map-specification/objects/baseMap/
+    """
+    title: str
+    layers: list[JSON]
+    options: JSON | None = None
+
+
 class MapBuilder:
     def __init__(self, gis: GIS | None = None) -> None:
         """Collect Web Map inputs; GIS provides runtime context, not JSON fields.
@@ -29,8 +40,20 @@ class MapBuilder:
         """
         self._gis = gis
         self._initial_state: tuple[Extent, int] | None = None
+        self._basemap = Basemap("Topographic", [{
+            "id": "topographic",
+            "layerType": "ArcGISTiledMapServiceLayer",
+            "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer",
+        }])
         self._layers: list[JSON] = []
-        self._credentials: list[JSON] = []
+        self._credentials: list[tuple[str | None, GIS]] = []
+
+    def set_basemap(self, basemap: Basemap) -> None:
+        """Store a Basemap object for future builds, without schema validation.
+
+        Spec: https://developers.arcgis.com/web-map-specification/objects/baseMap/
+        """
+        self._basemap = basemap
 
     def set_initial_state(self, extent: Extent, sref: int) -> None:
         """Store [xmin, ymin, xmax, ymax] and its WKID for the initial viewpoint.
@@ -42,21 +65,27 @@ class MapBuilder:
         self._initial_state = (extent, sref)
 
     def build(self) -> Map:
-        """Assemble Web Map JSON with a tiled basemap and operational layers.
+        """Assemble Web Map JSON with the configured basemap and operational layers.
 
         Specs: https://developers.arcgis.com/web-map-specification/objects/webmap/
         https://developers.arcgis.com/web-map-specification/objects/baseMap/
         https://developers.arcgis.com/web-map-specification/objects/tiledMapServiceLayer/
         """
+        credentials: list[JSON] = []
+        for server, gis in self._credentials:
+            if gis.token is not None:
+                if not isinstance(gis.token, str) or not gis.token:
+                    raise ValueError("Token must be a nonempty string or None.")
+                # Portal scopes resolve from the current GIS; service scopes stay per endpoint.
+                credentials.append({
+                    "server": server if server is not None else gis.portal_url.rstrip("/") + "/sharing/rest",
+                    "token": gis.token,
+                })
         definition: JSON = {
             "version": "2.37",
             "baseMap": {
-                "title": "Topographic",
-                "baseMapLayers": [{
-                    "id": "topographic",
-                    "layerType": "ArcGISTiledMapServiceLayer",
-                    "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer",
-                }],
+                "title": self._basemap.title, "baseMapLayers": self._basemap.layers,
+                **(self._basemap.options or {}),
             },
             "operationalLayers": self._layers,
         }
@@ -81,7 +110,7 @@ class MapBuilder:
                 "spatialReference": {"wkid": sref},
             }}}
         return Map(
-            definition, self._credentials,
+            definition, credentials,
             self._gis.portal_url if self._gis is not None else None,
         )
 
@@ -112,16 +141,15 @@ class MapBuilder:
         Spec: https://developers.arcgis.com/web-map-specification/objects/featureLayer/
         """
         url = _http_url(url)
-        parsed = urlsplit(url)
-        if not re.search(r"/FeatureServer/\d+/?$", parsed.path, re.IGNORECASE):
+        if not re.search(r"/FeatureServer/\d+/?$", urlsplit(url).path, re.IGNORECASE):
             raise ValueError("Use a FeatureServer URL ending in a numeric layer ID.")
+        parsed = urlsplit(url)
         server = parsed._replace(
-            path=parsed.path.rstrip("/").rsplit("/", 1)[0], query="", fragment=""
+            path=parsed.path.rstrip("/").rsplit("/", 1)[0], query="", fragment="",
         ).geturl()
-        gis = gis if gis is not None else self._gis
         self._add_layer(
             "ArcGISFeatureLayer", title, {"url": url},
-            token=gis.token if gis is not None else None, server=server, options=options,
+            gis=gis if gis is not None else self._gis, server=server, options=options,
         )
 
     def add_parquet_item(
@@ -137,27 +165,26 @@ class MapBuilder:
             raise ValueError("Pass a 32-character ArcGIS Online item ID.")
         self._add_layer(
             "ParquetLayer", title, {"source": {"type": "portal-item", "itemId": item_id}},
-            token=self._gis.token if self._gis is not None else None,
-            server=self._gis.portal_url.rstrip("/") + "/sharing/rest" if self._gis is not None else None,
-            options=options,
+            gis=self._gis, options=options,
         )
 
     def _add_layer(
         self, layer_type: str, title: str, source: JSON, *,
-        token: str | None = None, server: str | None = None,
-        options: JSON | None = None,
+        gis: GIS | None = None, server: str | None = None, options: JSON | None = None,
     ) -> None:
-        """Append a typed operational layer, with credentials stored separately.
+        """Append layer JSON, retaining its GIS separately until build().
 
-        Options overwrite layer fields without validation or a recursive merge.
+        Options overwrite fields without validation or a recursive merge.
         Spec: https://developers.arcgis.com/web-map-specification/objects/operationalLayers/
         """
         if not isinstance(title, str):
             raise TypeError("Layer title must be a string.")
-        if token is not None and (not isinstance(token, str) or not token):
+        if gis is not None and gis.token is not None and (
+            not isinstance(gis.token, str) or not gis.token
+        ):
             raise ValueError("Token must be a nonempty string or None.")
-        if token is not None:
-            self._credentials.append({"server": server, "token": token})
+        if gis is not None:
+            self._credentials.append((server, gis))
         self._layers.append({
             "id": uuid4().hex, "layerType": layer_type, "title": title, **source, **(options or {}),
         })

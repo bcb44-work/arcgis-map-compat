@@ -14,7 +14,7 @@ class BlockUnusedDependencies(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, BlockUnusedDependencies())
-from geoanalytics_widget import GIS, MapBuilder
+from geoanalytics_widget import Basemap, GIS, MapBuilder
 from ipywidgets import Widget
 from ipywidgets.embed import embed_minimal_html
 
@@ -54,6 +54,36 @@ class VisualizationTests(unittest.TestCase):
     def test_missing_extent_uses_sdk_defaults(self):
         widget, _ = self.build()
         self.assertNotIn("initialState", widget._webmap_dict)
+
+    def test_custom_basemap_is_replaced_and_snapshotted(self):
+        basemap = Basemap(
+            title="Imagery",
+            layers=[{
+                "id": "imagery", "layerType": "ArcGISTiledMapServiceLayer",
+                "url": "https://example.com/Imagery/MapServer", "opacity": 0.5,
+            }],
+            options={"futureOption": {"value": "SDK decides"}},
+        )
+        self.builder.set_basemap(basemap)
+        first, messages = self.build()
+        original = {
+            "title": basemap.title, "baseMapLayers": deepcopy(basemap.layers),
+            **deepcopy(basemap.options),
+        }
+        first._on_message(first, {"type": "ready"}, [])
+        self.assertEqual(messages[0]["definition"]["baseMap"], original)
+        basemap.title = "Updated imagery"
+        basemap.layers[0]["opacity"] = 0.75
+        basemap.options["futureOption"]["value"] = "Updated option"
+        second, _ = self.build()
+        self.assertEqual(second._webmap_dict["baseMap"], {
+            "title": basemap.title, "baseMapLayers": basemap.layers, **basemap.options,
+        })
+        self.builder.set_basemap(Basemap("Empty", []))
+        third, _ = self.build()
+        self.assertEqual(third._webmap_dict["baseMap"], {"title": "Empty", "baseMapLayers": []})
+        self.assertEqual(first._webmap_dict["baseMap"], original)
+        self.assertEqual(second._webmap_dict["baseMap"]["baseMapLayers"][0]["opacity"], 0.75)
 
     def test_signed_urls_and_multiple_layers(self):
         url = "https://example.com/download?signature=a%2Bb&file=layer"
@@ -114,6 +144,37 @@ class VisualizationTests(unittest.TestCase):
         self.assertEqual(
             widget._webmap_dict["operationalLayers"][0]["layerDefinition"]["definitionExpression"],
             "VALUE > 10",
+        )
+
+    def test_build_resolves_current_gis_without_changing_layer_json_or_existing_widgets(self):
+        gis = GIS("https://portal.example.com/arcgis", "original-token")
+        override = GIS("https://other.example.com", "override-token")
+        options = {"opacity": 0.5}
+        self.builder = MapBuilder(gis)
+        self.builder.add_feature_service(
+            "https://services.example.com/Test/FeatureServer/0", options=options)
+        self.builder.add_feature_service(
+            "https://other.example.com/Test/FeatureServer/1", gis=override)
+        self.builder.add_parquet_item("a" * 32)
+        first, _ = self.build()
+        original = deepcopy(first._credentials)
+        gis.token = "updated-token"
+        gis.portal_url = "https://new.example.com/arcgis/"
+        override.token = None
+        options["opacity"] = 0.75
+        second, _ = self.build()
+        self.assertEqual(second._credentials, [
+            {"server": "https://services.example.com/Test/FeatureServer", "token": "updated-token"},
+            {"server": "https://new.example.com/arcgis/sharing/rest", "token": "updated-token"},
+        ])
+        self.assertEqual(second._portal_url, gis.portal_url)
+        self.assertEqual(second._webmap_dict["operationalLayers"][0]["opacity"], 0.5)
+        self.assertEqual(first._credentials, original)
+        self.assertEqual(first._portal_url, "https://portal.example.com/arcgis")
+        self.assertEqual(first._webmap_dict["operationalLayers"][0]["opacity"], 0.5)
+        self.assertEqual(
+            first._webmap_dict["operationalLayers"][0]["id"],
+            second._webmap_dict["operationalLayers"][0]["id"],
         )
 
     def test_parquet_url_list_creates_one_layer(self):
@@ -202,7 +263,8 @@ class VisualizationTests(unittest.TestCase):
             self.builder.add_feature_service(
                 "https://example.com/Test/FeatureServer/0", gis=GIS("https://example.com", 42))
         self.assertEqual(self.builder._layers, original)
-        self.assertEqual(self.builder._credentials, [])
+        widget, _ = self.build()
+        self.assertEqual(widget._credentials, [])
 
     def test_invalid_extent_is_rejected_at_build(self):
         for extent in (
