@@ -179,7 +179,7 @@ class BrowserTests(unittest.TestCase):
         self.page.route("https://portal.test/arcgis/sharing/rest/**", self.serve_data)
         self.requests = []
         self.builder = MapBuilder(GIS("https://portal.test/arcgis", "PORTAL_TEST_TOKEN"))
-        self.builder.set_initial_state((-119, 33, -117, 35), sref=4326)
+        self.builder.set_initial_extent((-119, 33, -117, 35), sref=4326)
         self.builder.add_feature_service(
             "https://data.test/rest/services/Points/FeatureServer/0",
             gis=GIS("https://feature-portal.test", "TEST_TOKEN"),

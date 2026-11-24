@@ -91,7 +91,7 @@ class MapBuilder:
             raise ValueError("Choose a basemap from: light, dark, streets, osm.")
         self._basemap = basemap
 
-    def set_initial_state(self, extent: Extent, sref: int) -> None:
+    def set_initial_extent(self, extent: Extent, sref: int) -> None:
         """Store [xmin, ymin, xmax, ymax] and its WKID for the initial viewpoint.
 
         JSON assembly is deferred until build().

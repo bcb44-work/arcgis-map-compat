@@ -33,9 +33,9 @@ class VisualizationTests(unittest.TestCase):
         return widget, messages
 
     def test_build_uses_final_extent_and_sref(self):
-        self.builder.set_initial_state((0, 0, 1000, 1000), sref=3857)
+        self.builder.set_initial_extent((0, 0, 1000, 1000), sref=3857)
         extent = [-119, 33, -117, 35]
-        self.builder.set_initial_state(extent, sref=4326)
+        self.builder.set_initial_extent(extent, sref=4326)
         widget, messages = self.build()
         state = widget._webmap_dict["initialState"]["viewpoint"]
         self.assertEqual(state, {"targetGeometry": {
@@ -263,7 +263,7 @@ class VisualizationTests(unittest.TestCase):
         self.builder.add_parquet("https://example.com/first.parquet")
         first, messages = self.build()
         original = deepcopy(first._webmap_dict)
-        self.builder.set_initial_state((0, 0, 1, 1), sref=4326)
+        self.builder.set_initial_extent((0, 0, 1, 1), sref=4326)
         self.builder.add_feature_service(
             "https://example.com/Test/FeatureServer/0", gis=GIS("https://example.com", "second-secret"))
         second, _ = self.build()
@@ -329,12 +329,12 @@ class VisualizationTests(unittest.TestCase):
             [2, 0, 1, 1], [0, 2, 1, 1],
         ):
             builder = MapBuilder()
-            builder.set_initial_state(extent, sref=4326)
+            builder.set_initial_extent(extent, sref=4326)
             with self.assertRaises(ValueError):
                 builder.build()
         for sref in (None, "4326", True, -1, 0):
             builder = MapBuilder()
-            builder.set_initial_state((0, 0, 1, 1), sref=sref)
+            builder.set_initial_extent((0, 0, 1, 1), sref=sref)
             with self.assertRaises(ValueError):
                 builder.build()
 
