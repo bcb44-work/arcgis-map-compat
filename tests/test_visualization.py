@@ -55,6 +55,38 @@ class VisualizationTests(unittest.TestCase):
         widget, _ = self.build()
         self.assertNotIn("initialState", widget._webmap_dict)
 
+    def test_builder_methods_chain_into_build(self):
+        builder = (
+            self.builder
+            .set_basemap("light")
+            .set_initial_extent([-119, 33, -117, 35], sref=4326)
+            .add_parquet("https://example.com/data.parquet")
+            .add_feature_service("https://example.com/Test/FeatureServer/0")
+            .add_parquet_item("a" * 32)
+        )
+        self.assertIs(builder, self.builder)
+        widget = builder.build()
+        self.addCleanup(widget.close)
+        self.assertEqual(widget._webmap_dict["baseMap"]["title"], "Light Gray Canvas")
+        self.assertEqual(
+            widget._webmap_dict["initialState"]["viewpoint"]["targetGeometry"],
+            {
+                "xmin": -119, "ymin": 33, "xmax": -117, "ymax": 35,
+                "spatialReference": {"wkid": 4326},
+            },
+        )
+        layers = widget._webmap_dict["operationalLayers"]
+        self.assertEqual([layer["layerType"] for layer in layers], [
+            "ParquetLayer", "ArcGISFeatureLayer", "ParquetLayer",
+        ])
+        self.assertEqual(layers[0]["source"], {
+            "type": "files", "urls": ["https://example.com/data.parquet"],
+        })
+        self.assertEqual(layers[1]["url"], "https://example.com/Test/FeatureServer/0")
+        self.assertEqual(layers[2]["source"], {
+            "type": "portal-item", "itemId": "a" * 32,
+        })
+
     def test_custom_basemap_is_replaced_and_snapshotted(self):
         basemap = Basemap(
             title="Imagery", id="imagery", layer_type="ArcGISTiledMapServiceLayer",

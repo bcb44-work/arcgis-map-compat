@@ -63,6 +63,8 @@ _BASEMAPS = {
 
 
 class MapBuilder:
+    """Collect map inputs; public set_* and add_* methods return this builder."""
+
     def __init__(self, gis: GIS | None = None, *, basemap: str | Basemap | None = None) -> None:
         """Collect Web Map inputs; GIS provides runtime context, not JSON fields.
 
@@ -81,7 +83,7 @@ class MapBuilder:
         if basemap is not None:
             self.set_basemap(basemap)
 
-    def set_basemap(self, basemap: str | Basemap) -> None:
+    def set_basemap(self, basemap: str | Basemap) -> MapBuilder:
         """Store light, dark, streets, osm, or an unvalidated custom Basemap.
 
         Presets omit separate reference-label layers, not labels built into styles.
@@ -90,8 +92,9 @@ class MapBuilder:
         if isinstance(basemap, str) and basemap not in _BASEMAPS:
             raise ValueError("Choose a basemap from: light, dark, streets, osm.")
         self._basemap = basemap
+        return self
 
-    def set_initial_extent(self, extent: Extent, sref: int) -> None:
+    def set_initial_extent(self, extent: Extent, sref: int) -> MapBuilder:
         """Store [xmin, ymin, xmax, ymax] and its WKID for the initial viewpoint.
 
         JSON assembly is deferred until build().
@@ -99,6 +102,7 @@ class MapBuilder:
         https://developers.arcgis.com/web-map-specification/objects/extent/
         """
         self._initial_state = (extent, sref)
+        return self
 
     def build(self) -> Map:
         """Assemble Web Map JSON with the configured basemap and operational layers.
@@ -160,7 +164,7 @@ class MapBuilder:
 
     def add_parquet(
         self, url: str | list[str], *, title: str = "Parquet layer", options: JSON | None = None,
-    ) -> None:
+    ) -> MapBuilder:
         """Add one ParquetLayer with a files source; JavaScript reads the URLs.
 
         Specs: https://developers.arcgis.com/web-map-specification/objects/parquetLayer/
@@ -175,11 +179,12 @@ class MapBuilder:
         self._add_layer(
             "ParquetLayer", title, {"source": {"type": "files", "urls": urls}}, options=options,
         )
+        return self
 
     def add_feature_service(
         self, url: str, *, gis: GIS | None = None, title: str = "Feature layer",
         options: JSON | None = None,
-    ) -> None:
+    ) -> MapBuilder:
         """Add an ArcGISFeatureLayer using its service URL; keep tokens outside JSON.
 
         Spec: https://developers.arcgis.com/web-map-specification/objects/featureLayer/
@@ -195,10 +200,11 @@ class MapBuilder:
             "ArcGISFeatureLayer", title, {"url": url},
             gis=gis if gis is not None else self._gis, server=server, options=options,
         )
+        return self
 
     def add_parquet_item(
         self, item_id: str, *, title: str = "Parquet layer", options: JSON | None = None,
-    ) -> None:
+    ) -> MapBuilder:
         """Add a ParquetLayer with a portal-item source resolved in the builder's portal.
 
         The source contains itemId, not a per-layer portal URL.
@@ -211,6 +217,7 @@ class MapBuilder:
             "ParquetLayer", title, {"source": {"type": "portal-item", "itemId": item_id}},
             gis=self._gis, options=options,
         )
+        return self
 
     def _add_layer(
         self, layer_type: str, title: str, source: JSON, *,
