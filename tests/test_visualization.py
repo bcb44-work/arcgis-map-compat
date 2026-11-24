@@ -57,33 +57,90 @@ class VisualizationTests(unittest.TestCase):
 
     def test_custom_basemap_is_replaced_and_snapshotted(self):
         basemap = Basemap(
-            title="Imagery",
-            layers=[{
-                "id": "imagery", "layerType": "ArcGISTiledMapServiceLayer",
-                "url": "https://example.com/Imagery/MapServer", "opacity": 0.5,
-            }],
+            title="Imagery", id="imagery", layer_type="ArcGISTiledMapServiceLayer",
+            url="https://example.com/Imagery/MapServer", opacity=0.5,
             options={"futureOption": {"value": "SDK decides"}},
         )
         self.builder.set_basemap(basemap)
         first, messages = self.build()
         original = {
-            "title": basemap.title, "baseMapLayers": deepcopy(basemap.layers),
-            **deepcopy(basemap.options),
+            "title": "Imagery", "baseMapLayers": [{
+                "id": "imagery", "layerType": "ArcGISTiledMapServiceLayer",
+                "url": "https://example.com/Imagery/MapServer", "opacity": 0.5,
+                "title": "Imagery", **deepcopy(basemap.options),
+            }],
         }
         first._on_message(first, {"type": "ready"}, [])
         self.assertEqual(messages[0]["definition"]["baseMap"], original)
         basemap.title = "Updated imagery"
-        basemap.layers[0]["opacity"] = 0.75
+        basemap.opacity = 0.75
         basemap.options["futureOption"]["value"] = "Updated option"
         second, _ = self.build()
         self.assertEqual(second._webmap_dict["baseMap"], {
-            "title": basemap.title, "baseMapLayers": basemap.layers, **basemap.options,
+            "title": basemap.title, "baseMapLayers": [{
+                **original["baseMapLayers"][0], "opacity": 0.75,
+                "title": basemap.title, **basemap.options,
+            }],
         })
-        self.builder.set_basemap(Basemap("Empty", []))
+        self.builder.set_basemap("light")
         third, _ = self.build()
-        self.assertEqual(third._webmap_dict["baseMap"], {"title": "Empty", "baseMapLayers": []})
+        self.assertEqual(third._webmap_dict["baseMap"]["title"], "Light Gray Canvas")
         self.assertEqual(first._webmap_dict["baseMap"], original)
         self.assertEqual(second._webmap_dict["baseMap"]["baseMapLayers"][0]["opacity"], 0.75)
+
+    def test_basemap_fields_and_options_are_resolved_at_build(self):
+        basemap = Basemap(
+            id="vector", layer_type="VectorTileLayer",
+            style_url="https://example.com/style.json", title="Vector",
+            opacity=0, visibility=False,
+            options={"title": "Override", "futureOption": {"value": 1}},
+        )
+        self.builder.set_basemap(basemap)
+        first, _ = self.build()
+        self.assertEqual(first._webmap_dict["baseMap"]["baseMapLayers"], [{
+            "id": "vector", "layerType": "VectorTileLayer",
+            "styleUrl": "https://example.com/style.json", "title": "Override",
+            "opacity": 0, "visibility": False, "futureOption": {"value": 1},
+        }])
+        basemap.style_url = "https://example.com/updated.json"
+        basemap.options["futureOption"]["value"] = 2
+        second, _ = self.build()
+        self.assertEqual(second._webmap_dict["baseMap"]["baseMapLayers"][0]["styleUrl"],
+                         basemap.style_url)
+        self.assertEqual(first._webmap_dict["baseMap"]["baseMapLayers"][0]["futureOption"],
+                         {"value": 1})
+
+    def test_basemap_presets_build_and_publish_independent_json(self):
+        for name in ("light", "dark", "streets", "osm"):
+            with self.subTest(basemap=name):
+                self.builder = MapBuilder(basemap=name)
+                first, messages = self.build()
+                basemap = deepcopy(first._webmap_dict["baseMap"])
+                layer = basemap["baseMapLayers"][0]
+                self.assertEqual(len(basemap["baseMapLayers"]), 1)
+                self.assertFalse(layer.get("isReference", False))
+                self.assertEqual(
+                    layer["layerType"],
+                    "VectorTileLayer" if name == "osm" else "ArcGISTiledMapServiceLayer",
+                )
+                first._on_message(first, {"type": "ready"}, [])
+                self.assertEqual(messages[0]["definition"]["baseMap"], basemap)
+                first._webmap_dict["baseMap"]["baseMapLayers"].clear()
+                second, _ = self.build()
+                self.assertEqual(second._webmap_dict["baseMap"], basemap)
+                self.builder.set_basemap("dark" if name != "dark" else "light")
+                third, _ = self.build()
+                self.assertNotEqual(third._webmap_dict["baseMap"], basemap)
+                self.assertEqual(second._webmap_dict["baseMap"], basemap)
+
+    def test_unknown_basemap_preserves_previous_selection(self):
+        self.builder.set_basemap("light")
+        with self.assertRaisesRegex(ValueError, "light, dark, streets, osm"):
+            self.builder.set_basemap("unknown")
+        widget, _ = self.build()
+        self.assertEqual(widget._webmap_dict["baseMap"]["title"], "Light Gray Canvas")
+        with self.assertRaises(ValueError):
+            MapBuilder(basemap="unknown")
 
     def test_signed_urls_and_multiple_layers(self):
         url = "https://example.com/download?signature=a%2Bb&file=layer"

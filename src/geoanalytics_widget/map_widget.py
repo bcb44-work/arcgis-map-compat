@@ -23,36 +23,72 @@ class GIS:
 
 @dataclass
 class Basemap:
-    """Basemap inputs, assembled at build time without schema validation.
+    """Single-layer basemap; use url for tile services or style_url for vector styles.
 
-    Spec: https://developers.arcgis.com/web-map-specification/objects/baseMap/
+    Options override layer fields without validation.
+    Specs: https://developers.arcgis.com/web-map-specification/objects/baseMap/
+    https://developers.arcgis.com/web-map-specification/objects/baseMapLayer/
+    https://developers.arcgis.com/web-map-specification/objects/vectorTileLayer/
     """
     title: str
-    layers: list[JSON]
+    layer_type: str
+    url: str | None = None
+    style_url: str | None = None
+    opacity: float | None = None
+    visibility: bool | None = None
     options: JSON | None = None
+    id: str = field(default_factory=lambda: uuid4().hex)
+
+
+# Presets omit separate reference-label layers. Streets and OSM retain built-in labels.
+# https://developers.arcgis.com/web-map-specification/objects/baseMapLayer/
+# https://developers.arcgis.com/web-map-specification/objects/vectorTileLayer/
+_BASEMAPS = {
+    name: Basemap(
+        title=title, id=name, layer_type=layer_type,
+        url=url if layer_type == "ArcGISTiledMapServiceLayer" else None,
+        style_url=url if layer_type == "VectorTileLayer" else None,
+    )
+    for name, title, layer_type, url in [
+        ("light", "Light Gray Canvas", "ArcGISTiledMapServiceLayer",
+         "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer"),
+        ("dark", "Dark Gray Canvas", "ArcGISTiledMapServiceLayer",
+         "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer"),
+        ("streets", "Esri Streets Basemap", "ArcGISTiledMapServiceLayer",
+         "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer"),
+        ("osm", "OpenStreetMap Vector Basemap", "VectorTileLayer",
+         "https://basemaps.arcgis.com/arcgis/rest/services/OpenStreetMap_v2/VectorTileServer/resources/styles/root.json"),
+    ]
+}
 
 
 class MapBuilder:
-    def __init__(self, gis: GIS | None = None) -> None:
+    def __init__(self, gis: GIS | None = None, *, basemap: str | Basemap | None = None) -> None:
         """Collect Web Map inputs; GIS provides runtime context, not JSON fields.
 
         Spec: https://developers.arcgis.com/web-map-specification/objects/webmap/
         """
         self._gis = gis
         self._initial_state: tuple[Extent, int] | None = None
-        self._basemap = Basemap("Topographic", [{
-            "id": "topographic",
-            "layerType": "ArcGISTiledMapServiceLayer",
-            "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer",
-        }])
+        self._basemap: str | Basemap = Basemap(
+            title="Topographic",
+            id="topographic",
+            layer_type="ArcGISTiledMapServiceLayer",
+            url="https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer",
+        )
         self._layers: list[JSON] = []
         self._credentials: list[tuple[str | None, GIS]] = []
+        if basemap is not None:
+            self.set_basemap(basemap)
 
-    def set_basemap(self, basemap: Basemap) -> None:
-        """Store a Basemap object for future builds, without schema validation.
+    def set_basemap(self, basemap: str | Basemap) -> None:
+        """Store light, dark, streets, osm, or an unvalidated custom Basemap.
 
+        Presets omit separate reference-label layers, not labels built into styles.
         Spec: https://developers.arcgis.com/web-map-specification/objects/baseMap/
         """
+        if isinstance(basemap, str) and basemap not in _BASEMAPS:
+            raise ValueError("Choose a basemap from: light, dark, streets, osm.")
         self._basemap = basemap
 
     def set_initial_state(self, extent: Extent, sref: int) -> None:
@@ -81,11 +117,19 @@ class MapBuilder:
                     "server": server if server is not None else gis.portal_url.rstrip("/") + "/sharing/rest",
                     "token": gis.token,
                 })
+        basemap = _BASEMAPS[self._basemap] if isinstance(self._basemap, str) else self._basemap
+        basemap_layer = {
+            **{key: value for key, value in {
+                "id": basemap.id, "layerType": basemap.layer_type,
+                "url": basemap.url, "styleUrl": basemap.style_url, "title": basemap.title,
+                "opacity": basemap.opacity, "visibility": basemap.visibility,
+            }.items() if value is not None},
+            **(basemap.options or {}),
+        }
         definition: JSON = {
             "version": "2.37",
             "baseMap": {
-                "title": self._basemap.title, "baseMapLayers": self._basemap.layers,
-                **(self._basemap.options or {}),
+                "title": basemap.title, "baseMapLayers": [basemap_layer],
             },
             "operationalLayers": self._layers,
         }

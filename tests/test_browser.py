@@ -148,6 +148,32 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(self.page.locator("iframe").count(), 0)
 
     @unittest.skipUnless(os.getenv("ARCGIS_BROWSER_LIVE"), "Set ARCGIS_BROWSER_LIVE=1 for CDN check")
+    def test_real_sdk_basemap_presets(self):
+        self.builder = MapBuilder(basemap="light")
+        self.mount(real=True)
+        self.loaded()
+        for name in ("light", "dark", "streets", "osm"):
+            with self.subTest(basemap=name):
+                self.builder.set_basemap(name)
+                widget = self.builder.build()
+                self.addCleanup(widget.close)
+                result = self.frame.evaluate("""async definition => {
+                    const WebMap = await $arcgis.import("@arcgis/core/WebMap.js");
+                    const map = WebMap.fromJSON(definition);
+                    try {
+                        await map.load();
+                        await map.basemap.loadAll();
+                        return {
+                            types: map.basemap.baseLayers.map(layer => layer.type).toArray(),
+                            references: map.basemap.referenceLayers.length,
+                        };
+                    } finally { map.destroy(); }
+                }""", widget._webmap_dict)
+                self.assertEqual(result, {
+                    "types": ["vector-tile" if name == "osm" else "tile"], "references": 0,
+                })
+
+    @unittest.skipUnless(os.getenv("ARCGIS_BROWSER_LIVE"), "Set ARCGIS_BROWSER_LIVE=1 for CDN check")
     def test_real_sdk_feature_service_and_parquet(self):
         self.page.route("https://data.test/**", self.serve_data)
         self.page.route("https://portal.test/arcgis/sharing/rest/**", self.serve_data)
