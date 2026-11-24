@@ -10,9 +10,12 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import anywidget
+from traitlets import Unicode
 
 Extent = list[float] | tuple[float, float, float, float]
 JSON = dict[str, Any]
+_DEFAULT_WIDTH = "100%"
+_DEFAULT_HEIGHT = "630px"
 
 
 @dataclass
@@ -71,7 +74,7 @@ class MapBuilder:
         Spec: https://developers.arcgis.com/web-map-specification/objects/webmap/
         """
         self._gis = gis
-        self._initial_state: tuple[Extent, int] | None = None
+        self._initial_extent: tuple[Extent, int] | None = None
         self._basemap: str | Basemap = Basemap(
             title="Topographic",
             id="topographic",
@@ -80,6 +83,8 @@ class MapBuilder:
         )
         self._layers: list[JSON] = []
         self._credentials: list[tuple[str | None, GIS]] = []
+        self._width = _DEFAULT_WIDTH
+        self._height = _DEFAULT_HEIGHT
         if basemap is not None:
             self.set_basemap(basemap)
 
@@ -101,7 +106,17 @@ class MapBuilder:
         Specs: https://developers.arcgis.com/web-map-specification/objects/initialState/
         https://developers.arcgis.com/web-map-specification/objects/extent/
         """
-        self._initial_state = (extent, sref)
+        self._initial_extent = (extent, sref)
+        return self
+
+    def set_width(self, width: str | int) -> MapBuilder:
+        """Set the widget width as a CSS length or integer pixels."""
+        self._width = _css_dimension(width)
+        return self
+
+    def set_height(self, height: str | int) -> MapBuilder:
+        """Set the widget height as a CSS length or integer pixels."""
+        self._height = _css_dimension(height)
         return self
 
     def build(self) -> Map:
@@ -137,8 +152,8 @@ class MapBuilder:
             },
             "operationalLayers": self._layers,
         }
-        if self._initial_state is not None:
-            extent, sref = self._initial_state
+        if self._initial_extent is not None:
+            extent, sref = self._initial_extent
             if not isinstance(extent, (list, tuple)) or len(extent) != 4:
                 raise ValueError("Extent must be [xmin, ymin, xmax, ymax].")
             if not all(
@@ -160,6 +175,7 @@ class MapBuilder:
         return Map(
             definition, credentials,
             self._gis.portal_url if self._gis is not None else None,
+            width=self._width, height=self._height,
         )
 
     def add_parquet(
@@ -243,13 +259,18 @@ class MapBuilder:
 
 class Map(anywidget.AnyWidget):
     _esm = Path(__file__).parent / "map.js"
+    _width = Unicode(_DEFAULT_WIDTH).tag(sync=True)
+    _height = Unicode(_DEFAULT_HEIGHT).tag(sync=True)
 
-    def __init__(self, definition: JSON, credentials: list[JSON], portal_url: str | None) -> None:
+    def __init__(
+        self, definition: JSON, credentials: list[JSON], portal_url: str | None, *,
+        width: str = _DEFAULT_WIDTH, height: str = _DEFAULT_HEIGHT,
+    ) -> None:
         """Snapshot Web Map JSON separately from runtime credentials and portal context.
 
         Spec: https://developers.arcgis.com/web-map-specification/objects/webmap/
         """
-        super().__init__()
+        super().__init__(_width=width, _height=height)
         self._webmap_dict = deepcopy(definition)
         self._credentials = deepcopy(credentials)
         self._portal_url = portal_url
@@ -283,6 +304,18 @@ class Map(anywidget.AnyWidget):
             self._credentials.clear()
             self._webmap_dict["operationalLayers"].clear()
         super().close()
+
+
+def _css_dimension(value: str | int) -> str:
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < 0:
+            raise ValueError("Widget dimensions cannot be negative.")
+        return f"{value}px"
+    if not isinstance(value, str):
+        raise TypeError("Use a CSS length or integer pixels for widget dimensions.")
+    if not value.strip():
+        raise ValueError("Widget dimensions cannot be empty.")
+    return value.strip()
 
 
 def _http_url(value: str) -> str:

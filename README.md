@@ -26,3 +26,42 @@ map_widget
 
 Chain `add_feature_service(url)`, `add_parquet(url)`, or `add_parquet_item(item_id)`
 before `build()` to include layers. Separate, non-chained calls still work.
+
+Use `.set_width("100%").set_height(480)` before `build()` to size the widget.
+Both setters accept CSS lengths or integer pixels. The default is `100%` wide
+and `630px` tall. For height relative to the browser viewport, use a value
+like `"60vh"`.
+
+## Style a layer
+
+Click a feature to inspect its attributes. If a layer supports popups and
+doesn't already have one, the widget generates it from the layer's fields.
+Use `options={"popupInfo": ...}` to customize it or
+`options={"disablePopup": True}` to turn it off.
+
+Pass `options=` when adding a layer. For example, draw every point in a Parquet
+item as a blue circle (use your existing `gis` and `item_id`):
+
+```python
+style = {
+    "layerDefinition": {
+        "drawingInfo": {
+            "renderer": {
+                "type": "simple",
+                "symbol": {
+                    "type": "esriSMS",
+                    "style": "esriSMSCircle",
+                    "color": [0, 120, 255, 255],
+                    "size": 8,
+                },
+            },
+        },
+    },
+}
+
+MapBuilder(gis=gis).add_parquet_item(item_id, options=style).build()
+```
+
+Change `color` (red, green, blue, alpha; each 0–255) or `size` (in points).
+For lines or polygons, use a matching line or fill symbol instead of a marker.
+For more examples, see the [ArcGIS renderer spec](https://developers.arcgis.com/web-map-specification/objects/renderer/).

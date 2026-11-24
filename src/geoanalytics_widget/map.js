@@ -1,8 +1,9 @@
 // Isolate the SDK from notebook AMD loaders. Only static code goes into srcdoc.
 function mount(model) {
-  document.body.style.margin = "0";
+  document.body.style.cssText =
+    "margin:0;height:100vh;display:grid;grid-template-rows:auto minmax(0,1fr)";
   const container = document.createElement("div");
-  container.style.height = "600px";
+  container.style.minWidth = "0";
   const status = document.createElement("div");
   status.setAttribute("role", "status");
   status.textContent = "Waiting for the Python kernel...";
@@ -53,7 +54,13 @@ function mount(model) {
     await view.when();
     if (disposed) return;
     const results = await Promise.allSettled(
-      map.layers.toArray().map(layer => view.whenLayerView(layer)),
+      map.layers.toArray().map(async layer => {
+        await view.whenLayerView(layer);
+        if (!disposed && layer.popupEnabled && !layer.popupTemplate &&
+            typeof layer.createPopupTemplate === "function") {
+          layer.popupTemplate = layer.createPopupTemplate();
+        }
+      }),
     );
     if (!disposed) {
       status.textContent = results.some(result => result.status === "rejected")
@@ -83,7 +90,11 @@ function mount(model) {
 function render({model, el}) {
   const frame = document.createElement("iframe");
   frame.title = "ArcGIS map";
-  frame.style.cssText = "display:block;border:0;width:100%;height:630px";
+  frame.style.cssText = "display:block;border:0";
+  for (const dimension of ["width", "height"]) {
+    frame.style[dimension] = model.get(`_${dimension}`);
+    if (!frame.style[dimension]) throw new Error(`Invalid map widget ${dimension}.`);
+  }
   frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"></head>
     <body><script>window.mount = ${mount.toString()};<\/script></body></html>`;
   let cleanup;

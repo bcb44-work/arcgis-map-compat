@@ -34,6 +34,11 @@ class MapView {
   async when() {}
   async whenLayerView(layer) {
     if (layer.title === "Fail") throw new Error("SECRET_URL_MUST_NOT_BE_SHOWN");
+    layer.popupEnabled = !layer.disablePopup;
+    layer.popupTemplate = layer.popupInfo ?? null;
+    if (layer.layerType === "ParquetLayer" || layer.layerType === "ArcGISFeatureLayer") {
+      layer.createPopupTemplate = () => ({title: layer.title, fieldInfos: [{fieldName: "name"}]});
+    }
   }
   destroy() { this.destroyed = true; }
 }
@@ -45,7 +50,7 @@ window.config = {};
 window.$arcgis = {import:async () => [WebMap, MapView, identity, config]};
 """
 
-HOST = """async source => {
+HOST = """async ({source, state}) => {
   // Simulate a notebook's AMD loader in the parent, not in the isolated iframe.
   window.define = () => { throw Error("Notebook AMD loader used"); };
   window.define.amd = {};
@@ -53,6 +58,7 @@ HOST = """async source => {
   window.sent = [];
   window.receive = message => listeners.forEach(fn => fn(message));
   const model = {
+    get: name => state[name],
     on: (name, fn) => listeners.add(fn),
     off: (name, fn) => listeners.delete(fn),
     send: message => window.sent.push(message)
@@ -94,8 +100,8 @@ class BrowserTests(unittest.TestCase):
             self.page.route("https://js.arcgis.com/5.1/core.js",
                             lambda route: route.fulfill(body=FAKE_SDK, content_type="text/javascript"))
             self.page.route("**/main.css", lambda route: route.fulfill(body=""))
-        source = self.map.get_state()["_esm"]
-        self.page.evaluate(HOST, source)
+        state = self.map.get_state()
+        self.page.evaluate(HOST, {"source": state.pop("_esm"), "state": state})
         self.page.wait_for_function("sent.some(message => message.type === 'ready')")
         self.frame = self.page.frames[1]
         self.map._on_message(self.map, {"type": "ready"}, [])
@@ -140,6 +146,45 @@ class BrowserTests(unittest.TestCase):
         self.frame.wait_for_function(
             "document.querySelector('[role=status]').textContent.startsWith('A layer could not')")
         self.assertNotIn("SECRET", self.frame.locator("body").inner_text())
+
+    def test_popup_fallback_for_supported_layers(self):
+        url = "https://example.com/FeatureServer/0"
+        self.builder.add_parquet_item("a" * 32, title="Parquet")
+        self.builder.add_feature_service(url, title="Service")
+        self.builder.add_feature_service(url, options={"popupInfo": {"title": "Custom"}})
+        self.builder.add_parquet_item("a" * 32, options={"disablePopup": True})
+        self.builder.add_feature_service(url, options={"layerType": "Unsupported"})
+        self.mount()
+        self.loaded()
+
+        self.assertEqual(self.frame.evaluate("calls.maps[0].layers.items.map(l => l.popupTemplate)"), [
+            {"title": "Parquet", "fieldInfos": [{"fieldName": "name"}]},
+            {"title": "Service", "fieldInfos": [{"fieldName": "name"}]},
+            {"title": "Custom"},
+            None,
+            None,
+        ])
+
+    def test_widget_size_and_map_fill(self):
+        self.page.set_viewport_size({"width": 1000, "height": 800})
+        self.page.evaluate("document.body.style.margin = '0'")
+        self.builder.set_width("75%").set_height(480)
+        self.mount()
+        self.loaded()
+
+        iframe = self.page.locator("iframe").bounding_box()
+        self.assertEqual((iframe["width"], iframe["height"]), (750, 480))
+        self.assertEqual(
+            self.frame.evaluate(
+                "calls.views[0].container.getBoundingClientRect().height"
+            ),
+            480,
+        )
+        self.frame.locator("[role=status]").evaluate("(el) => { el.textContent = 'Status'; }")
+        self.assertEqual(
+            self.frame.evaluate("calls.views[0].container.getBoundingClientRect().bottom"),
+            480,
+        )
 
     def test_disposal_during_sdk_loading(self):
         self.mount()
